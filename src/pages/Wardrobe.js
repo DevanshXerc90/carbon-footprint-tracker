@@ -18,7 +18,7 @@ import { DeleteIcon } from "@chakra-ui/icons";
 
 const Wardrobe = () => {
     const [wardrobe, setWardrobe] = useState([]);
-    const [newItem, setNewItem] = useState({ name: "", footprint: "" });
+    const [newItem, setNewItem] = useState({ name: "", weight: "" });
     const [totalFootprint, setTotalFootprint] = useState(0);
     const toast = useToast();
     const user = auth.currentUser;
@@ -32,16 +32,13 @@ const Wardrobe = () => {
         const fetchWardrobe = async () => {
             try {
                 const userDocRef = doc(db, "users", user.uid);
-                console.log("📄 Fetching wardrobe from:", userDocRef.path);
                 const docSnap = await getDoc(userDocRef);
 
                 if (docSnap.exists()) {
                     const data = docSnap.data();
-                    console.log("✅ Wardrobe data fetched:", data);
                     setWardrobe(data.wardrobe || []);
                     setTotalFootprint(data.totalCarbonFootprint || 0);
                 } else {
-                    console.warn("⚠️ No wardrobe document found. Creating new.");
                     await setDoc(userDocRef, {
                         wardrobe: [],
                         totalCarbonFootprint: 0,
@@ -55,8 +52,47 @@ const Wardrobe = () => {
         fetchWardrobe();
     }, [user]);
 
+    const fetchClothingCarbonEmissions = async (weightKg) => {
+        const apiKey = process.env.REACT_APP_CLIMATIQ_API_KEY;
+        if (!apiKey) {
+            console.error("❌ Missing API key.");
+            return null;
+        }
+
+        const payload = {
+            emission_factor: {
+                activity_id: "consumer_goods-type_clothing_general",
+            },
+            parameters: {
+                weight: Number(weightKg),
+                weight_unit: "kg",
+            },
+        };
+
+        try {
+            const response = await fetch("https://beta4.api.climatiq.io/estimate", {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${apiKey}`,
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify(payload),
+            });
+
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || "API call failed");
+            }
+
+            return data.co2e;
+        } catch (err) {
+            console.error("❌ Climatiq API error:", err.message);
+            return null;
+        }
+    };
+
     const addItem = async () => {
-        if (!newItem.name || !newItem.footprint) {
+        if (!newItem.name || !newItem.weight) {
             toast({
                 title: "Please fill in all fields",
                 status: "warning",
@@ -66,10 +102,10 @@ const Wardrobe = () => {
             return;
         }
 
-        const footprintValue = parseFloat(newItem.footprint);
-        if (isNaN(footprintValue) || footprintValue < 0) {
+        const weightValue = parseFloat(newItem.weight);
+        if (isNaN(weightValue) || weightValue <= 0) {
             toast({
-                title: "Enter a valid carbon footprint value",
+                title: "Enter a valid weight in kg",
                 status: "error",
                 duration: 2000,
                 isClosable: true,
@@ -77,21 +113,31 @@ const Wardrobe = () => {
             return;
         }
 
-        const updatedWardrobe = [...wardrobe, { ...newItem, footprint: footprintValue }];
-        const updatedTotal = totalFootprint + footprintValue;
+        const footprint = await fetchClothingCarbonEmissions(weightValue);
+        if (footprint === null) {
+            toast({
+                title: "Failed to calculate footprint",
+                status: "error",
+                duration: 2000,
+                isClosable: true,
+            });
+            return;
+        }
+
+        const item = { name: newItem.name, weight: weightValue, footprint };
+        const updatedWardrobe = [...wardrobe, item];
+        const updatedTotal = totalFootprint + footprint;
 
         setWardrobe(updatedWardrobe);
         setTotalFootprint(updatedTotal);
-        setNewItem({ name: "", footprint: "" });
+        setNewItem({ name: "", weight: "" });
 
         try {
             const userDocRef = doc(db, "users", user.uid);
-            console.log("📤 Adding item to Firestore:", newItem);
             await updateDoc(userDocRef, {
                 wardrobe: updatedWardrobe,
                 totalCarbonFootprint: updatedTotal,
             });
-            console.log("✅ Item added successfully.");
             toast({
                 title: "Item added",
                 status: "success",
@@ -99,9 +145,9 @@ const Wardrobe = () => {
                 isClosable: true,
             });
         } catch (error) {
-            console.error("❌ Failed to add item:", error.message);
+            console.error("❌ Firestore update error:", error.message);
             toast({
-                title: "Failed to add item",
+                title: "Failed to save item",
                 status: "error",
                 duration: 2000,
                 isClosable: true,
@@ -119,12 +165,10 @@ const Wardrobe = () => {
 
         try {
             const userDocRef = doc(db, "users", user.uid);
-            console.log("🗑️ Deleting item:", itemToRemove);
             await updateDoc(userDocRef, {
                 wardrobe: updatedWardrobe,
                 totalCarbonFootprint: updatedTotal,
             });
-            console.log("✅ Item removed successfully.");
             toast({
                 title: "Item removed",
                 status: "info",
@@ -132,7 +176,6 @@ const Wardrobe = () => {
                 isClosable: true,
             });
         } catch (error) {
-            console.error("❌ Failed to remove item:", error.message);
             toast({
                 title: "Failed to remove item",
                 status: "error",
@@ -153,10 +196,10 @@ const Wardrobe = () => {
                     onChange={(e) => setNewItem({ ...newItem, name: e.target.value })}
                 />
                 <Input
-                    placeholder="Carbon footprint (kg CO2e)"
-                    value={newItem.footprint}
+                    placeholder="Weight (in kg)"
+                    value={newItem.weight}
                     type="number"
-                    onChange={(e) => setNewItem({ ...newItem, footprint: e.target.value })}
+                    onChange={(e) => setNewItem({ ...newItem, weight: e.target.value })}
                 />
                 <Button colorScheme="teal" onClick={addItem} w="full">
                     Add Item
